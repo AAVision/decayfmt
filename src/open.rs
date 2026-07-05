@@ -9,52 +9,15 @@
 
 use crate::corrupt::corrupt;
 use crate::error::DecayError;
-use crate::format::{Header, ImageDimensions, HEADER_SIZE};
-use std::io::IsTerminal;
+use crate::format::{parse_filename, Header, ImageDimensions, HEADER_SIZE};
+use std::fs::OpenOptions;
+use std::io::{IsTerminal, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Filename extension prefix that precedes x for an image, for example `idcy3`.
-const IMAGE_EXTENSION_PREFIX: &str = "idcy";
-
-/// Filename extension prefix that precedes x for text, for example `tdcy7`.
-const TEXT_EXTENSION_PREFIX: &str = "tdcy";
-
 /// Number of bytes per pixel in an RGBA payload, used to size the display image.
 const RGBA_BYTES_PER_PIXEL: usize = 4;
-
-/// Parses the instability value x from a decayfmt filename.
-///
-/// x lives in the extension as `idcy<x>` or `tdcy<x>`, where x is a positive
-/// integer. x is read from the filename and nowhere else. A filename whose
-/// extension has no recognized prefix or no integer suffix yields FilenameNoX; a
-/// suffix that parses to zero yields XNotPositive. Returns x as f64 because that is
-/// what the corruption math consumes.
-fn parse_x_from_filename(path: &Path) -> Result<f64, DecayError> {
-    let filename = path.to_string_lossy().into_owned();
-    let no_x = || DecayError::FilenameNoX {
-        filename: filename.clone(),
-    };
-
-    let extension = path.extension().and_then(|raw| raw.to_str()).ok_or_else(no_x)?;
-    let digits = extension
-        .strip_prefix(IMAGE_EXTENSION_PREFIX)
-        .or_else(|| extension.strip_prefix(TEXT_EXTENSION_PREFIX))
-        .ok_or_else(no_x)?;
-
-    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(no_x());
-    }
-
-    let value: u32 = digits.parse().map_err(|_| no_x())?;
-    if value == 0 {
-        return Err(DecayError::XNotPositive {
-            value: f64::from(value),
-        });
-    }
-    Ok(f64::from(value))
-}
 
 /// Confirms the file can be written before any corruption is attempted.
 ///
@@ -82,7 +45,7 @@ fn ensure_writable(path: &Path) -> Result<(), DecayError> {
 /// performs no display, so the corruption it commits never depends on anything
 /// being shown. The header is read but never changed; only the payload is corrupted.
 fn decay_in_place(path: &Path) -> Result<(Header, Vec<u8>), DecayError> {
-    let x = parse_x_from_filename(path)?;
+    let (filename_type, x) = parse_filename(path)?;
     ensure_writable(path)?;
 
     let mut file_bytes = std::fs::read(path).map_err(|error| DecayError::Io {
@@ -92,16 +55,43 @@ fn decay_in_place(path: &Path) -> Result<(Header, Vec<u8>), DecayError> {
 
     let header = Header::read(&file_bytes)?;
 
+    // The extension prefix and the header must agree on the payload type. If they
+    // disagree, for example an image file renamed to a .tdcy<x> name, refuse rather
+    // than trust one source over the other.
+    if filename_type != header.file_type {
+        return Err(DecayError::MismatchedFileType {
+            extension_kind: filename_type.label(),
+            header_kind: header.file_type.label(),
+        });
+    }
+
     // Corrupt the payload in place. The header occupies the first HEADER_SIZE bytes
     // and is left untouched; everything after it is the payload.
     corrupt(&mut file_bytes[HEADER_SIZE..], header.file_type, x);
 
-    // Persist the corruption. This is the point of no return: once this write
-    // lands, the previous payload state is gone for good.
-    std::fs::write(path, &file_bytes).map_err(|error| DecayError::Io {
-        context: format!("open: write corrupted payload to '{}'", path.display()),
-        source: error,
-    })?;
+    // Persist the corruption by overwriting only the payload region in place. The
+    // header bytes on disk are never rewritten, matching the contract that the header
+    // is immutable after encode, and because corruption preserves length the file is
+    // never truncated. This is the point of no return: once the write lands the
+    // previous payload state is gone. A crash mid-write leaves a partially corrupted
+    // payload behind an intact header, so the file still decays rather than bricking.
+    let mut file = OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|error| DecayError::Io {
+            context: format!("open: reopen for write '{}'", path.display()),
+            source: error,
+        })?;
+    file.seek(SeekFrom::Start(HEADER_SIZE as u64))
+        .map_err(|error| DecayError::Io {
+            context: format!("open: seek past header in '{}'", path.display()),
+            source: error,
+        })?;
+    file.write_all(&file_bytes[HEADER_SIZE..])
+        .map_err(|error| DecayError::Io {
+            context: format!("open: write corrupted payload to '{}'", path.display()),
+            source: error,
+        })?;
 
     Ok((header, file_bytes))
 }
@@ -112,6 +102,7 @@ fn decay_in_place(path: &Path) -> Result<(Header, Vec<u8>), DecayError> {
 /// displayed. Dimensions are present exactly for images, so their presence selects
 /// the display path.
 pub fn open_file(path: &Path) -> Result<(), DecayError> {
+    cleanup_old_view_files();
     let (header, file_bytes) = decay_in_place(path)?;
     let payload = &file_bytes[HEADER_SIZE..];
     match header.dimensions {
@@ -133,6 +124,11 @@ pub fn open_file(path: &Path) -> Result<(), DecayError> {
 fn display_text(payload: &[u8]) -> Result<(), DecayError> {
     let text = String::from_utf8_lossy(payload);
     print!("{}", text);
+    // Ensure the output ends on its own line so the shell prompt does not glue to the
+    // decayed text when the payload has no trailing newline of its own.
+    if !text.ends_with('\n') {
+        println!();
+    }
 
     if std::io::stdout().is_terminal() {
         return Ok(());
@@ -158,32 +154,54 @@ fn display_image(payload: &[u8], dimensions: ImageDimensions) -> Result<(), Deca
         .saturating_mul(RGBA_BYTES_PER_PIXEL);
     let image = image::RgbaImage::from_raw(dimensions.width, dimensions.height, payload.to_vec())
         .ok_or(DecayError::PayloadSizeMismatch {
-            expected,
-            found: payload.len(),
-        })?;
+        expected,
+        found: payload.len(),
+    })?;
 
     let viewer_path = temporary_output_path("png");
-    image.save(&viewer_path).map_err(|error| DecayError::ImageEncode {
-        context: format!(
-            "open: encode display png '{}': {}",
-            viewer_path.display(),
-            error
-        ),
-    })?;
+    image
+        .save(&viewer_path)
+        .map_err(|error| DecayError::ImageEncode {
+            context: format!(
+                "open: encode display png '{}': {}",
+                viewer_path.display(),
+                error
+            ),
+        })?;
 
     open_in_default_app(&viewer_path)
 }
 
 /// Builds a unique path in the system temp directory for a display file with the
-/// given extension. The file is left for the operating system to reclaim, since the
-/// viewer is launched asynchronously and we cannot know when it has finished
-/// reading the file.
+/// given extension. The viewer is launched asynchronously so this file cannot be
+/// deleted immediately; instead every open sweeps the previous ones via
+/// [`cleanup_old_view_files`], so old snapshots do not accumulate.
 fn temporary_output_path(extension: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_nanos())
         .unwrap_or(0);
     std::env::temp_dir().join(format!("decayfmt_view_{}.{}", nanos, extension))
+}
+
+/// Best-effort removal of the temporary view files left by previous opens.
+///
+/// Displaying a corrupted payload requires writing it to a temporary file for the
+/// system viewer, and those files linger as snapshots of past decay states. Since the
+/// format's whole point is that there is no recovery to an earlier state, the tool
+/// must not quietly leave recoverable copies of less-corrupted states lying around. On
+/// each open we sweep the old ones. Failures are ignored: a file still held open by a
+/// viewer simply survives until the next run.
+fn cleanup_old_view_files() {
+    if let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) {
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                if name.starts_with("decayfmt_view_") {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
 }
 
 /// Hands a file to the operating system's default application for its type, used
@@ -207,10 +225,12 @@ fn open_in_default_app(path: &Path) -> Result<(), DecayError> {
         Command::new("xdg-open").arg(path).spawn()
     };
 
-    spawn_result.map(|_child| ()).map_err(|error| DecayError::Io {
-        context: format!("open: launch default viewer for '{}'", path.display()),
-        source: error,
-    })
+    spawn_result
+        .map(|_child| ())
+        .map_err(|error| DecayError::Io {
+            context: format!("open: launch default viewer for '{}'", path.display()),
+            source: error,
+        })
 }
 
 #[cfg(test)]
@@ -231,50 +251,17 @@ mod tests {
     }
 
     #[test]
-    fn x_is_parsed_from_image_and_text_extensions() {
-        assert_eq!(
-            parse_x_from_filename(Path::new("photo.idcy3")).expect("idcy3 parses"),
-            3.0
-        );
-        assert_eq!(
-            parse_x_from_filename(Path::new("note.tdcy12")).expect("tdcy12 parses"),
-            12.0
-        );
-    }
-
-    #[test]
-    fn missing_or_malformed_x_is_refused() {
-        for name in ["plain.png", "note.txt", "no_extension", "photo.idcy", "photo.idcyx"] {
-            assert!(
-                matches!(
-                    parse_x_from_filename(Path::new(name)),
-                    Err(DecayError::FilenameNoX { .. })
-                ),
-                "'{}' should yield FilenameNoX",
-                name
-            );
-        }
-    }
-
-    #[test]
-    fn zero_x_is_refused_as_not_positive() {
-        assert!(matches!(
-            parse_x_from_filename(Path::new("photo.idcy0")),
-            Err(DecayError::XNotPositive { .. })
-        ));
-    }
-
-    #[test]
-    fn open_changes_the_payload_on_disk() {
-        // Encode a text file, capture its clean payload, open it, then confirm the
-        // payload bytes on disk are no longer what they were.
+    fn open_changes_the_payload_but_never_the_header_on_disk() {
+        // Encode a text file, capture its clean payload and header, open it, then
+        // confirm the payload bytes on disk changed while the header bytes did not.
         let source = vec![b'a'; 4096];
         let input = unique_temp_path("source.txt");
         let decay_file = unique_temp_path("note.tdcy5");
         fs::write(&input, &source).expect("write test source");
-        encode_file(&input, &decay_file, 5.0).expect("encode should succeed");
+        encode_file(&input, &decay_file).expect("encode should succeed");
 
         let before = fs::read(&decay_file).expect("read encoded file");
+        let header_before = before[..HEADER_SIZE].to_vec();
         let payload_before = before[HEADER_SIZE..].to_vec();
 
         // decay_in_place is the persisted half of open, without the display step,
@@ -282,14 +269,51 @@ mod tests {
         decay_in_place(&decay_file).expect("decay should succeed");
 
         let after = fs::read(&decay_file).expect("read opened file");
-        let payload_after = &after[HEADER_SIZE..];
+        assert_eq!(
+            &after[..HEADER_SIZE],
+            header_before.as_slice(),
+            "the header bytes on disk must be untouched by open"
+        );
         assert_ne!(
-            payload_after, payload_before,
+            &after[HEADER_SIZE..],
+            payload_before.as_slice(),
             "payload must differ on disk after open"
+        );
+        assert_eq!(
+            after.len(),
+            before.len(),
+            "in-place payload overwrite must not change the file length"
         );
 
         let _ = fs::remove_file(&input);
         let _ = fs::remove_file(&decay_file);
+    }
+
+    #[test]
+    fn mismatched_extension_and_header_type_is_refused() {
+        // Encode an image (idcy), then present the same bytes under a text (tdcy) name.
+        // The header says image, the extension says text, so open must refuse.
+        let source_image = image::RgbaImage::from_fn(2, 2, |_, _| image::Rgba([1, 2, 3, 255]));
+        let input = unique_temp_path("source.png");
+        let image_file = unique_temp_path("photo.idcy3");
+        let mismatched = unique_temp_path("photo.tdcy3");
+        source_image.save(&input).expect("save test png");
+        encode_file(&input, &image_file).expect("encode image should succeed");
+
+        let bytes = fs::read(&image_file).expect("read image decayfmt file");
+        fs::write(&mismatched, &bytes).expect("write mismatched-name copy");
+
+        assert!(
+            matches!(
+                decay_in_place(&mismatched),
+                Err(DecayError::MismatchedFileType { .. })
+            ),
+            "a file whose extension and header disagree must be refused"
+        );
+
+        let _ = fs::remove_file(&input);
+        let _ = fs::remove_file(&image_file);
+        let _ = fs::remove_file(&mismatched);
     }
 
     // Restoring writability after the test uses set_readonly(false), which clippy
@@ -301,7 +325,7 @@ mod tests {
         let input = unique_temp_path("source.txt");
         let decay_file = unique_temp_path("note.tdcy3");
         fs::write(&input, b"some text").expect("write test source");
-        encode_file(&input, &decay_file, 3.0).expect("encode should succeed");
+        encode_file(&input, &decay_file).expect("encode should succeed");
 
         let mut permissions = fs::metadata(&decay_file)
             .expect("stat decay file")
@@ -310,7 +334,10 @@ mod tests {
         fs::set_permissions(&decay_file, permissions).expect("set read-only");
 
         assert!(
-            matches!(decay_in_place(&decay_file), Err(DecayError::ReadOnly { .. })),
+            matches!(
+                decay_in_place(&decay_file),
+                Err(DecayError::ReadOnly { .. })
+            ),
             "a read-only file must be refused"
         );
 
@@ -332,7 +359,10 @@ mod tests {
         fs::write(&decay_file, [0u8; 32]).expect("write bogus file");
 
         assert!(
-            matches!(decay_in_place(&decay_file), Err(DecayError::WrongMagic { .. })),
+            matches!(
+                decay_in_place(&decay_file),
+                Err(DecayError::WrongMagic { .. })
+            ),
             "a file without the magic bytes must be refused"
         );
 
@@ -340,12 +370,13 @@ mod tests {
     }
 
     #[test]
-    fn filename_without_x_is_refused_before_touching_the_file() {
-        // The path need not exist: parsing x fails before any file access.
+    fn unrecognized_name_is_refused_before_touching_the_file() {
+        // The path need not exist: the filename convention is checked before any file
+        // access, and a plain .txt name is not a decayfmt name at all.
         let missing = Path::new("this_file_does_not_exist.txt");
         assert!(matches!(
             decay_in_place(missing),
-            Err(DecayError::FilenameNoX { .. })
+            Err(DecayError::UnrecognizedExtension { .. })
         ));
     }
 }

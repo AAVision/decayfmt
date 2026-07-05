@@ -11,42 +11,6 @@ use crate::format::{FileType, Header};
 use std::fs;
 use std::path::Path;
 
-/// Validates that the instability value x supplied for encoding is usable.
-///
-/// x must be a positive, finite number. Zero, negatives, infinities, and NaN are
-/// all refused with XNotPositive. This is the single place x is checked at encode
-/// time; the rest of the flow can assume a sane x once this returns Ok.
-fn validate_x(x: f64) -> Result<(), DecayError> {
-    if x.is_finite() && x > 0.0 {
-        Ok(())
-    } else {
-        Err(DecayError::XNotPositive { value: x })
-    }
-}
-
-/// Determines the payload type from the output filename's extension.
-///
-/// The decayfmt naming convention is `name.idcy<x>` for images and `name.tdcy<x>`
-/// for text, where the same extension later carries x at open time. The numeric
-/// suffix is ignored here because x is supplied explicitly via the CLI at encode;
-/// only the idcy/tdcy prefix decides the file type. An unrecognized extension is
-/// refused rather than guessed.
-fn file_type_from_output(output: &Path) -> Result<FileType, DecayError> {
-    let extension = output
-        .extension()
-        .and_then(|raw| raw.to_str())
-        .unwrap_or("");
-    if extension.starts_with("idcy") {
-        Ok(FileType::Image)
-    } else if extension.starts_with("tdcy") {
-        Ok(FileType::Text)
-    } else {
-        Err(DecayError::UnrecognizedExtension {
-            extension: extension.to_string(),
-        })
-    }
-}
-
 /// Decodes a source image's bytes into its pixel dimensions and a raw RGBA payload.
 ///
 /// The image crate accepts any format it supports (PNG, JPEG, and others) and is
@@ -54,9 +18,10 @@ fn file_type_from_output(output: &Path) -> Result<FileType, DecayError> {
 /// decayfmt payload stores. The dimensions are returned alongside so the header can
 /// record them; the payload is the pixel data only and does not encode its own size.
 fn decode_image(source_bytes: &[u8], input: &Path) -> Result<(u32, u32, Vec<u8>), DecayError> {
-    let decoded = image::load_from_memory(source_bytes).map_err(|error| DecayError::ImageDecode {
-        context: format!("encode: decode image '{}': {}", input.display(), error),
-    })?;
+    let decoded =
+        image::load_from_memory(source_bytes).map_err(|error| DecayError::ImageDecode {
+            context: format!("encode: decode image '{}': {}", input.display(), error),
+        })?;
     let rgba = decoded.to_rgba8();
     let (width, height) = rgba.dimensions();
     Ok((width, height, rgba.into_raw()))
@@ -89,16 +54,17 @@ fn write_decayfmt(output: &Path, header: Header, payload: &[u8]) -> Result<(), D
     })
 }
 
-/// Encodes a source file at `input` into a decayfmt file at `output` for the given
-/// instability value x.
+/// Encodes a source file at `input` into a decayfmt file at `output`.
 ///
-/// The file type is taken from the output extension, the source is read and turned
-/// into a raw payload (RGBA for images, UTF-8 for text), and the header plus
-/// payload are written out. No corruption is applied; the produced file is clean
-/// and will parse cleanly via format.rs.
-pub fn encode_file(input: &Path, output: &Path, x: f64) -> Result<(), DecayError> {
-    validate_x(x)?;
-    let file_type = file_type_from_output(output)?;
+/// The payload type and the instability value x both come from the output filename
+/// (`name.idcy<x>` or `name.tdcy<x>`), parsed by the same routine open uses, so an
+/// output name that could never be opened, a missing or malformed x, is refused here
+/// rather than producing a permanently unopenable file. The source is read and turned
+/// into a raw payload (RGBA for images, UTF-8 for text), and the header plus payload
+/// are written out. No corruption is applied; the produced file is clean and parses
+/// cleanly via format.rs. The value of x is not stored; it lives only in the filename.
+pub fn encode_file(input: &Path, output: &Path) -> Result<(), DecayError> {
+    let (file_type, _x) = crate::format::parse_filename(output)?;
 
     let source_bytes = fs::read(input).map_err(|error| DecayError::Io {
         context: format!("encode: read input '{}'", input.display()),
@@ -134,57 +100,13 @@ mod tests {
     }
 
     #[test]
-    fn validate_x_accepts_positive_values() {
-        for x in [0.5, 1.0, 3.0, 10.0, 1000.0] {
-            assert!(validate_x(x).is_ok(), "x = {} should be accepted", x);
-        }
-    }
-
-    #[test]
-    fn validate_x_rejects_non_positive_and_non_finite() {
-        for x in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            assert!(
-                matches!(validate_x(x), Err(DecayError::XNotPositive { .. })),
-                "x = {} should be rejected with XNotPositive",
-                x
-            );
-        }
-    }
-
-    #[test]
-    fn file_type_is_detected_from_output_extension() {
-        assert_eq!(
-            file_type_from_output(Path::new("photo.idcy3")).expect("idcy is an image"),
-            FileType::Image
-        );
-        assert_eq!(
-            file_type_from_output(Path::new("note.tdcy7")).expect("tdcy is text"),
-            FileType::Text
-        );
-    }
-
-    #[test]
-    fn unrecognized_output_extension_is_refused() {
-        for name in ["photo.png", "note.txt", "noextension"] {
-            assert!(
-                matches!(
-                    file_type_from_output(Path::new(name)),
-                    Err(DecayError::UnrecognizedExtension { .. })
-                ),
-                "'{}' should be refused",
-                name
-            );
-        }
-    }
-
-    #[test]
     fn encode_text_writes_header_and_exact_payload() {
         let source = b"the quick brown fox jumps over the lazy dog";
         let input = unique_temp_path("source.txt");
         let output = unique_temp_path("note.tdcy3");
         fs::write(&input, source).expect("write test source");
 
-        encode_file(&input, &output, 3.0).expect("encode text should succeed");
+        encode_file(&input, &output).expect("encode text should succeed");
 
         let written = fs::read(&output).expect("read encoded file");
         assert_eq!(&written[0..4], &MAGIC, "magic bytes must be DCYF");
@@ -212,7 +134,7 @@ mod tests {
         let output = unique_temp_path("photo.idcy3");
         source_image.save(&input).expect("save test png");
 
-        encode_file(&input, &output, 3.0).expect("encode image should succeed");
+        encode_file(&input, &output).expect("encode image should succeed");
 
         let written = fs::read(&output).expect("read encoded file");
         assert_eq!(&written[0..4], &MAGIC, "magic bytes must be DCYF");

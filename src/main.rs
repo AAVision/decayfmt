@@ -12,7 +12,11 @@ use std::process::ExitCode;
 
 /// The decayfmt CLI: encode source files into decaying files.
 #[derive(Parser)]
-#[command(name = "decayfmt", version, about = "A file format where opening a file corrupts it.")]
+#[command(
+    name = "decayfmt",
+    version,
+    about = "A file format where opening a file corrupts it."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -26,10 +30,8 @@ enum Command {
         /// Path to the source image or text file to encode.
         #[arg(long)]
         input: PathBuf,
-        /// Instability value x. Must be a positive number. Higher x decays faster.
-        #[arg(long)]
-        x: f64,
-        /// Path to write the decayfmt file to, ending in .idcy<x> or .tdcy<x>.
+        /// Path to write the decayfmt file to, ending in .idcy<x> or .tdcy<x>. The
+        /// instability value x is taken from this name; higher x decays faster.
         #[arg(long)]
         output: PathBuf,
     },
@@ -45,7 +47,7 @@ enum Command {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
-        Command::Encode { input, x, output } => decayfmt::encode::encode_file(&input, &output, x),
+        Command::Encode { input, output } => decayfmt::encode::encode_file(&input, &output),
         Command::Open { file } => decayfmt::open::open_file(&file),
     };
 
