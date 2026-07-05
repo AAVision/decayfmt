@@ -31,6 +31,14 @@ pub enum DecayError {
     /// The file_type byte is neither image (0x01) nor text (0x02).
     UnsupportedFileType { found: u8 },
 
+    /// The filename's extension prefix and the header disagree about the payload
+    /// type, for example an image file renamed to a `.tdcy<x>` name. We refuse
+    /// rather than trust one source over the other.
+    MismatchedFileType {
+        extension_kind: &'static str,
+        header_kind: &'static str,
+    },
+
     /// The target file is read-only. Corruption cannot be written, so the file is
     /// not displayed. Opening must cost a corruption; a free read breaks the contract.
     ReadOnly { path: String },
@@ -48,6 +56,10 @@ pub enum DecayError {
 
     /// The instability value x parsed from the filename was not a positive number.
     XNotPositive { value: f64 },
+
+    /// The instability value x in the filename was a run of digits too large to fit
+    /// a u32. There is an x; it is simply out of the supported range.
+    XOutOfRange { value: String },
 
     /// A filesystem read or write failed. The context names the component and the
     /// operation; the source is the underlying operating system error.
@@ -93,6 +105,14 @@ impl fmt::Display for DecayError {
                 "format: file_type check failed: 0x{:02x} is neither image (0x01) nor text (0x02).",
                 found
             ),
+            DecayError::MismatchedFileType {
+                extension_kind,
+                header_kind,
+            } => write!(
+                f,
+                "open: type check failed: the filename extension indicates {} but the header says {}. Refusing to guess which is correct.",
+                extension_kind, header_kind
+            ),
             DecayError::ReadOnly { path } => write!(
                 f,
                 "open: writability check failed: '{}' is read-only. Corruption cannot be written, so the file will not be displayed.",
@@ -116,6 +136,12 @@ impl fmt::Display for DecayError {
                 f,
                 "open: instability check failed: x = {} is not a positive number.",
                 value
+            ),
+            DecayError::XOutOfRange { value } => write!(
+                f,
+                "open: filename parse failed: instability value x = '{}' is too large; the maximum is {}.",
+                value,
+                u32::MAX
             ),
             DecayError::Io { context, source } => write!(f, "{}: {}", context, source),
             DecayError::ImageDecode { context } => write!(f, "{}", context),

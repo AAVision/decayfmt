@@ -1,14 +1,16 @@
-//! The decayfmt binary header: definition, serialization, deserialization, and
-//! validation of magic bytes and version.
+//! The decayfmt format definition: the binary header and the filename convention.
 //!
-//! This module knows nothing about corruption, file I/O, or the CLI. It turns a
-//! fixed 16-byte header into a typed [`Header`] and back. The header is written
-//! exactly once at encode time and is never mutated afterward; only the payload
-//! that follows it ever changes. The invariant this module upholds is that a
-//! buffer is only ever accepted as a decayfmt header if its magic and version are
-//! ones this build recognizes. Anything else is a typed refusal, never a guess.
+//! This module owns two pieces of format metadata: the fixed 16-byte header (magic,
+//! version, file type, and image dimensions) and the filename convention that carries
+//! the payload type and the instability value x (`name.idcy<x>` / `name.tdcy<x>`). It
+//! knows nothing about corruption, file I/O, or the CLI. The header is written exactly
+//! once at encode time and never mutated afterward; only the payload that follows it
+//! ever changes. The invariant this module upholds is that a buffer is only accepted
+//! as a header, and a name only accepted as a decayfmt name, if they match this build
+//! exactly. Anything else is a typed refusal, never a guess.
 
 use crate::error::DecayError;
+use std::path::Path;
 
 /// The four magic bytes that identify a decayfmt file: ASCII "DCYF".
 pub const MAGIC: [u8; 4] = *b"DCYF";
@@ -22,6 +24,12 @@ pub const FILE_TYPE_IMAGE: u8 = 0x01;
 
 /// file_type byte for a text payload (raw UTF-8 bytes).
 pub const FILE_TYPE_TEXT: u8 = 0x02;
+
+/// Filename extension prefix that precedes x for an image, for example `idcy3`.
+pub const IMAGE_EXTENSION_PREFIX: &str = "idcy";
+
+/// Filename extension prefix that precedes x for text, for example `tdcy7`.
+pub const TEXT_EXTENSION_PREFIX: &str = "tdcy";
 
 /// Byte offset of the 4-byte little-endian image width within the header.
 const WIDTH_OFFSET: usize = 6;
@@ -63,6 +71,52 @@ impl FileType {
             FILE_TYPE_TEXT => Ok(FileType::Text),
             other => Err(DecayError::UnsupportedFileType { found: other }),
         }
+    }
+
+    /// A short human-readable name for this file type, used in error messages when
+    /// the filename's extension and the header disagree about the payload type.
+    pub fn label(self) -> &'static str {
+        match self {
+            FileType::Image => "image",
+            FileType::Text => "text",
+        }
+    }
+}
+
+/// Parses the decayfmt filename convention into the payload type and instability x.
+///
+/// The convention is `name.idcy<x>` for images and `name.tdcy<x>` for text, where x
+/// is a positive integer. The payload type comes from the prefix and x from the
+/// integer suffix. Both encode (to validate its output name) and open (to read x and
+/// cross-check the type against the header) go through here, so the naming rule lives
+/// in exactly one place. Every way a name can fail to fit the convention is a distinct
+/// typed error: an unrecognized prefix, a missing or non-numeric x, a zero x, or an x
+/// too large to fit a u32. x is never inferred from anywhere but the filename.
+pub fn parse_filename(path: &Path) -> Result<(FileType, f64), DecayError> {
+    let extension = path.extension().and_then(|raw| raw.to_str()).unwrap_or("");
+
+    let (file_type, digits) = if let Some(rest) = extension.strip_prefix(IMAGE_EXTENSION_PREFIX) {
+        (FileType::Image, rest)
+    } else if let Some(rest) = extension.strip_prefix(TEXT_EXTENSION_PREFIX) {
+        (FileType::Text, rest)
+    } else {
+        return Err(DecayError::UnrecognizedExtension {
+            extension: extension.to_string(),
+        });
+    };
+
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(DecayError::FilenameNoX {
+            filename: path.to_string_lossy().into_owned(),
+        });
+    }
+
+    match digits.parse::<u32>() {
+        Ok(0) => Err(DecayError::XNotPositive { value: 0.0 }),
+        Ok(value) => Ok((file_type, f64::from(value))),
+        Err(_) => Err(DecayError::XOutOfRange {
+            value: digits.to_string(),
+        }),
     }
 }
 
@@ -124,8 +178,7 @@ impl Header {
         bytes[4] = VERSION;
         bytes[5] = self.file_type.to_byte();
         if let Some(dimensions) = self.dimensions {
-            bytes[WIDTH_OFFSET..WIDTH_OFFSET + 4]
-                .copy_from_slice(&dimensions.width.to_le_bytes());
+            bytes[WIDTH_OFFSET..WIDTH_OFFSET + 4].copy_from_slice(&dimensions.width.to_le_bytes());
             bytes[HEIGHT_OFFSET..HEIGHT_OFFSET + 4]
                 .copy_from_slice(&dimensions.height.to_le_bytes());
         }
@@ -301,5 +354,63 @@ mod tests {
                 height: 480
             })
         );
+    }
+
+    #[test]
+    fn parse_filename_reads_type_and_x() {
+        assert_eq!(
+            parse_filename(Path::new("photo.idcy3")).expect("idcy3 parses"),
+            (FileType::Image, 3.0)
+        );
+        assert_eq!(
+            parse_filename(Path::new("note.tdcy12")).expect("tdcy12 parses"),
+            (FileType::Text, 12.0)
+        );
+    }
+
+    #[test]
+    fn parse_filename_refuses_unrecognized_extension() {
+        for name in ["photo.png", "note.txt", "no_extension"] {
+            assert!(
+                matches!(
+                    parse_filename(Path::new(name)),
+                    Err(DecayError::UnrecognizedExtension { .. })
+                ),
+                "'{}' should be an unrecognized extension",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn parse_filename_refuses_missing_or_non_numeric_x() {
+        for name in ["photo.idcy", "note.tdcyx", "photo.idcy3a"] {
+            assert!(
+                matches!(
+                    parse_filename(Path::new(name)),
+                    Err(DecayError::FilenameNoX { .. })
+                ),
+                "'{}' should yield FilenameNoX",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn parse_filename_refuses_zero_x() {
+        assert!(matches!(
+            parse_filename(Path::new("photo.idcy0")),
+            Err(DecayError::XNotPositive { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_filename_refuses_x_too_large_for_u32() {
+        // A run of digits that overflows u32 reports an out-of-range error, not the
+        // misleading "no x" error, since there clearly is an x, it is just too big.
+        assert!(matches!(
+            parse_filename(Path::new("photo.idcy99999999999")),
+            Err(DecayError::XOutOfRange { .. })
+        ));
     }
 }
