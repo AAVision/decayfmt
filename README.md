@@ -1,5 +1,8 @@
 # decayfmt
 
+[![CI](https://github.com/aravpanwar/decayfmt/actions/workflows/ci.yml/badge.svg)](https://github.com/aravpanwar/decayfmt/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/decayfmt.svg)](https://crates.io/crates/decayfmt)
+
 **A file format that corrupts itself a little every time you open it.** Every open
 permanently damages the file on disk, by an amount baked into the filename, before it is
 ever shown to you. There is no recovery from the file alone. The file is the only copy
@@ -92,13 +95,18 @@ See it decay in your terminal, with no image or sample file needed:
 
 ```
 echo "this sentence is about to start dying" > note.txt
-decayfmt encode --input note.txt --x 8 --output note.tdcy8
+decayfmt encode --input note.txt --output note.tdcy8
 decayfmt open note.tdcy8
 ```
 
-Run that last line a few more times and watch the sentence rot further on each open. The
-corruption is written to disk before it prints, so there is no way back. A high `x` like 8
-garbles it fast; a low `x` like 1 is a slow burn over many opens.
+The instability `x` comes from the output name (`note.tdcy8` decays at `x=8`). Run that last
+line a few more times and watch the sentence rot further on each open. The corruption is
+written to disk before it prints, so there is no way back. A high `x` like 8 garbles it
+fast; a low `x` like 1 is a slow burn over many opens.
+
+On Windows PowerShell the `>` redirect writes UTF-16, which decayfmt refuses; create the
+file with `Set-Content note.txt "this sentence is about to start dying"` instead. cmd.exe
+and PowerShell 7 are fine with the line above.
 
 ## Usage
 
@@ -108,12 +116,14 @@ Turn a source image or text file into a decayfmt file. Encoding never corrupts; 
 file is clean.
 
 ```
-decayfmt encode --input photo.png --x 3 --output photo.idcy3
-decayfmt encode --input note.txt  --x 7 --output note.tdcy7
+decayfmt encode --input photo.png --output photo.idcy3
+decayfmt encode --input note.txt  --output note.tdcy7
 ```
 
-The file type comes from the output extension: `idcy` for images, `tdcy` for text.
-Images are decoded to raw RGBA; text must be valid UTF-8.
+Both the file type and the instability `x` come from the output name: `idcy` for images and
+`tdcy` for text, followed by `x` as a positive integer (`photo.idcy3` is an image at `x=3`).
+An output name that could never be opened is refused rather than written. Images are decoded
+to raw RGBA; text must be valid UTF-8.
 
 ### Open
 
@@ -138,8 +148,9 @@ p = 1 - exp(-x / 10)
 ```
 
 So `x = 1` corrupts roughly 9.5% of eligible bytes per open, `x = 5` roughly 39%, and
-`x = 10` roughly 63%. The randomness comes from the operating system CSPRNG and is never
-seeded, so two opens of the same state look different.
+`x = 10` roughly 63%. The randomness comes from a cryptographically secure generator
+seeded from operating system entropy, never from a fixed seed, so two opens of the same
+state look different and the corruption sequence cannot be replayed.
 
 - **Images:** the red, green, and blue channels are each corrupted independently with
   probability `p`. The alpha channel is never touched, so corruption shows as color
@@ -169,8 +180,13 @@ seeded, so two opens of the same state look different.
 - This is a social contract, not cryptography. A backup defeats it entirely.
 - A determined person with a hex editor can tamper with the file.
 - It is not a secure deletion tool and makes no cryptographic guarantee.
+- Displaying a file writes the corrupted result to a temporary file for the system viewer.
+  Each open sweeps the previous ones, but a viewer holding one open can briefly leave a
+  recoverable snapshot of a past state behind.
+- Two opens running at the same time can race: both read the same starting state, and the
+  last write wins, so concurrent opens may cost fewer corruptions than sequential ones.
 - v1 supports images and text only. No audio, video, or other binary formats.
 
 ## License
 
-See [LICENSE](LICENSE).
+decayfmt is released under the MIT License. See [LICENSE](LICENSE).
