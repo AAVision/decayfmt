@@ -3,9 +3,10 @@
 //! These are pure functions over byte slices. There is no file I/O and no CLI
 //! logic here; the caller is responsible for reading the payload, calling into
 //! this module, and writing the result back. The invariant this module upholds is
-//! that corruption is always stochastic and always sourced from the operating
-//! system CSPRNG. It is never seeded and never deterministic, because deterministic
-//! corruption would let someone reconstruct the corruption sequence and undo it.
+//! that corruption is always stochastic and always drawn from a cryptographically
+//! secure generator seeded from operating system entropy, never from a fixed seed. It
+//! is never deterministic, because a reproducible corruption sequence could be replayed
+//! to reconstruct the original and undo the decay.
 
 use crate::format::FileType;
 use rand::Rng;
@@ -44,9 +45,10 @@ fn corruption_probability(x: f64) -> f64 {
 
 /// Corrupts a payload in place according to its file type and instability value x.
 ///
-/// Mutates the slice directly. Randomness comes from the OS CSPRNG via
-/// `rand::thread_rng`, freshly per call, so two opens of the same bytes produce
-/// different results. Upholds the invariant that the corruption is never seeded.
+/// Mutates the slice directly. Randomness comes from `rand::thread_rng`, a
+/// cryptographically secure generator seeded from operating system entropy, drawn
+/// fresh per call, so two opens of the same bytes produce different results. Upholds
+/// the invariant that corruption is never driven by a fixed, replayable seed.
 pub fn corrupt(payload: &mut [u8], file_type: FileType, x: f64) {
     let probability = corruption_probability(x);
     let mut rng = rand::thread_rng();
