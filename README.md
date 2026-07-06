@@ -181,8 +181,8 @@ state look different and the corruption sequence cannot be replayed.
 - A determined person with a hex editor can tamper with the file.
 - It is not a secure deletion tool and makes no cryptographic guarantee.
 - Displaying a file writes the corrupted result to a temporary file for the system viewer.
-  Each open sweeps the previous ones, but a viewer holding one open can briefly leave a
-  recoverable snapshot of a past state behind.
+  The most recent one persists until the next open sweeps it, or indefinitely if there is
+  no next open, so a snapshot of the last-shown state stays recoverable until then.
 - Two opens running at the same time can race: both read the same starting state, and the
   last write wins, so concurrent opens may cost fewer corruptions than sequential ones.
 - v1 supports images and text only. No audio, video, or other binary formats.
