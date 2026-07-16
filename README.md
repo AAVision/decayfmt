@@ -3,6 +3,8 @@
 [![CI](https://github.com/aravpanwar/decayfmt/actions/workflows/ci.yml/badge.svg)](https://github.com/aravpanwar/decayfmt/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/decayfmt.svg)](https://crates.io/crates/decayfmt)
 
+_Featured in [This Week in Rust #660](https://this-week-in-rust.org/blog/2026/07/15/this-week-in-rust-660/)._
+
 **A file format that corrupts itself a little every time you open it.** Every open
 permanently damages the file on disk, by an amount baked into the filename, before it is
 ever shown to you. There is no recovery from the file alone. The file is the only copy
