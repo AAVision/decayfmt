@@ -8,6 +8,12 @@
 //! is never deterministic, because a reproducible corruption sequence could be replayed
 //! to reconstruct the original and undo the decay.
 
+// `chunks_exact_to_as_chunks` (a newer clippy lint) suggests `slice::as_chunks`, which is
+// stable only from Rust 1.88; we keep `chunks_exact` to preserve a low minimum supported
+// Rust version. `unknown_lints` is allowed too so older clippy versions that predate this
+// lint do not warn about the allow itself.
+#![allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
+
 use crate::format::FileType;
 use rand::Rng;
 
