@@ -192,3 +192,7 @@ state look different and the corruption sequence cannot be replayed.
 ## License
 
 decayfmt is released under the MIT License. See [LICENSE](LICENSE).
+
+---
+
+[HN Discussion](https://news.ycombinator.com/item?id=49390206)
