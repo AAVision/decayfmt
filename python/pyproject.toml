@@ -9,7 +9,7 @@ description = "A file format where decay is a first-class property. Every open p
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
-authors = [{ name = "Arav Panwar" }]
+authors = [{ name = "Arav Panwar" }, { name = "AAVision" }]
 keywords = ["corruption", "decay", "file-format", "entropy"]
 classifiers = [
     "Programming Language :: Python :: 3",
