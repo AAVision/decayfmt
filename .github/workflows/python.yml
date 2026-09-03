@@ -27,7 +27,7 @@ jobs:
           python-version: "3.12"
       - uses: dtolnay/rust-toolchain@stable
       - name: build wheel
-        uses: PyO3/maturin-action@v2
+        uses: PyO3/maturin-action@v1
         with:
           maturin-version: latest
           args: --release --manifest-path python/Cargo.toml --out target/wheels
@@ -57,7 +57,7 @@ jobs:
           path: target/wheels
           merge-multiple: true
       - name: publish
-        uses: PyO3/maturin-action@v2
+        uses: PyO3/maturin-action@v1
         with:
           maturin-version: latest
           command: publish
