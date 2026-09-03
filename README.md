@@ -52,15 +52,50 @@ original : This sentence is dying, and every time you read it you kill it a litt
  open 12 : h/Sm hgf}Nk0-'ts?K|iqgd HD6 e@`~V}t&Fe y%u re&" )2 Pnu kiKB )6UaC1it1lYMm1]b!
 ```
 
-Corruption only ever swaps in printable characters, so text garbles into readable-looking
-nonsense rather than binary noise.
+Corruption only ever swaps in printable characters, so the text rots into readable-looking
+nonsense.
 
 ## What this is, and is not
 
-decayfmt is a social contract enforced by math, not cryptography. It is not encryption,
-not DRM, and not a secure deletion tool. The corruption is honest and unrecoverable from
-the file alone, but anyone with a backup or a hex editor can defeat it. If you want the
-original, keep a backup. If you do not want anyone to recover it, do not make one.
+decayfmt is a social contract, not a security tool. Do not treat it as encryption, DRM, or
+a way to securely wipe a file. The corruption is honest and unrecoverable from the file
+alone, but anyone with a backup or a hex editor can defeat it. If you want the original,
+keep a backup. If you do not want anyone to recover it, do not make one.
+
+## FAQ
+
+A video sent a lot of people here at once, so here are the questions I keep getting.
+
+**Does the file corrupt itself?**
+
+No. Files are just data and cannot change on their own. decayfmt's `open` command is what
+corrupts the file: it reads the bytes, damages some of them, writes them back, and then shows
+you the result. A different program opening the same file would leave it untouched. The
+"self-corrupting" line is shorthand for "the tool corrupts it every time you use the tool to
+look at it."
+
+**Is this DRM? Could a company use it to make you re-buy games?**
+
+No, and it would be a terrible way to try. Anyone can copy the file before opening it and keep
+the original forever, so a backup defeats the whole thing in one step. It also needs write
+access to work, and a game that damaged its own files on every launch would break itself
+almost immediately. If a company wanted your files gone, they would just delete them. This
+gives nobody a power they did not already have.
+
+**Is it dangerous? Is it malware?**
+
+No. It only touches files you deliberately encode into the decayfmt format and then open with
+decayfmt. It does not scan your disk or run on its own. It is a toy, not a weapon.
+
+**Can I get a decayed file back?**
+
+Not from the file itself. Once the corruption is written, the earlier version is gone. If you
+want the original, keep a backup. That is the entire point.
+
+**Why does it exist?**
+
+Mostly for fun. I liked the idea of a file you could use up, like a print left in the sun.
+There is no serious use case, and I have been upfront about that from the start.
 
 ## Install
 
