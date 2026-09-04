@@ -34,8 +34,11 @@ jobs:
       - name: smoke test the wheel
         run: |
           python -m venv /tmp/wheelcheck
-          /tmp/wheelcheck/bin/pip install target/wheels/*.whl
-          /tmp/wheelcheck/bin/python python/tests/smoke.py
+          # Windows venvs put executables in Scripts/, unix venvs in bin/.
+          BIN=/tmp/wheelcheck/bin
+          [ -d /tmp/wheelcheck/Scripts ] && BIN=/tmp/wheelcheck/Scripts
+          "$BIN/pip" install target/wheels/*.whl
+          "$BIN/python" python/tests/smoke.py
         shell: bash
       - uses: actions/upload-artifact@v4
         with:
